@@ -6,7 +6,7 @@ import base64
 from PIL import Image
 import io
 import re
-from anthropic import Anthropic, APIStatusError, APIError
+from openai import OpenAI
 import difflib
 import time
 from rich.console import Console
@@ -57,10 +57,12 @@ def setup_virtual_environment() -> Tuple[str, str]:
 load_dotenv()
 
 # Initialize the Anthropic client
-anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-if not anthropic_api_key:
-    raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
-client = Anthropic(api_key=anthropic_api_key)
+# anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+# if not anthropic_api_key:
+#     raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
+# client = Anthropic(api_key=anthropic_api_key)
+
+client = OpenAI(base_url="http://10.2.125.37:1234/v1", api_key="lm-studio")
 
 # Initialize the Tavily client
 tavily_api_key = os.getenv("TAVILY_API_KEY")
