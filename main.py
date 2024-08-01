@@ -107,16 +107,16 @@ MAX_CONTEXT_TOKENS = 200000  # Reduced to 200k tokens for context window
 
 # Models
 # Models that maintain context memory across interactions
-MAINMODEL = "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
+# MAINMODEL = "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
 
-# Models that don't maintain context (memory is reset after each call)
-TOOLCHECKERMODEL = "claude-3-5-sonnet-20240620"
-CODEEDITORMODEL = "claude-3-5-sonnet-20240620"
-CODEEXECUTIONMODEL = "claude-3-5-sonnet-20240620"
+# # Models that don't maintain context (memory is reset after each call)
+# TOOLCHECKERMODEL = "claude-3-5-sonnet-20240620"
+# CODEEDITORMODEL = "claude-3-5-sonnet-20240620"
+# CODEEXECUTIONMODEL = "claude-3-5-sonnet-20240620"
 
 # System prompts
 BASE_SYSTEM_PROMPT = """
-You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model, specialized in software development with access to a variety of tools and the ability to instruct and direct a coding agent and a code execution one. Your capabilities include:
+You are Assistant-Engineer, an AI assistant powered by Anthropic's Llama 3.1 model, specialized in software development with access to a variety of tools and the ability to instruct and direct a coding agent and a code execution one. Your capabilities include:
 
 1. Creating and managing project structures
 2. Writing, debugging, and improving code across multiple languages
@@ -311,24 +311,32 @@ async def generate_edit_instructions(file_path, file_content, instructions, proj
         """
 
         # Make the API call to CODEEDITORMODEL (context is not maintained except for code_editor_memory)
-        response = client.messages.create(
-            model=CODEEDITORMODEL,
-            max_tokens=8000,
-            system=system_prompt,
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-            messages=[
-                {"role": "user", "content": "Generate SEARCH/REPLACE blocks for the necessary changes."}
-            ]
-        )
+        # response = client.messages.create(
+        #     model=CODEEDITORMODEL,
+        #     max_tokens=8000,
+        #     system=system_prompt,
+        #     extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+        #     messages=[
+        #         {"role": "user", "content": "Generate SEARCH/REPLACE blocks for the necessary changes."}
+        #     ]
+        # )
+        response = client.chat.completions.create(
+                        model="lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+                        messages=[
+                            # {"role": "system", "content": "Always answer in rhymes."},
+                            {"role": "user", "content": "Hello world"}
+                        ],
+                        temperature=0.7,
+                        )
         # Update token usage for code editor
         code_editor_tokens['input'] += response.usage.input_tokens
         code_editor_tokens['output'] += response.usage.output_tokens
 
         # Parse the response to extract SEARCH/REPLACE blocks
-        edit_instructions = parse_search_replace_blocks(response.content[0].text)
+        edit_instructions = parse_search_replace_blocks(response.choices[0].message['content'])
 
         # Update code editor memory (this is the only part that maintains some context between calls)
-        code_editor_memory.append(f"Edit Instructions for {file_path}:\n{response.content[0].text}")
+        code_editor_memory.append(f"Edit Instructions for {file_path}:\n{response.choices[0].message['content']}")
 
         # Add the file to code_editor_files set
         code_editor_files.add(file_path)
