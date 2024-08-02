@@ -12,9 +12,36 @@ from prompt_toolkit.styles import Style
 from typing import Tuple, Optional
 from rich.console import Console
 import json
+import os
+import signal
+import sys
+from tavily import TavilyClient
+import logging
+import venv
+tavily_api_key = os.getenv("TAVILY_API_KEY")
+if not tavily_api_key:
+    raise ValueError("TAVILY_API_KEY not found in environment variables")
 console = Console()
-
+tavily = TavilyClient(api_key=tavily_api_key)
 client = OpenAI(base_url="http://10.2.125.37:1234/v1", api_key="lm-studio")
+
+def setup_virtual_environment() -> Tuple[str, str]:
+    venv_name = "code_execution_env"
+    venv_path = os.path.join(os.getcwd(), venv_name)
+    try:
+        if not os.path.exists(venv_path):
+            venv.create(venv_path, with_pip=True)
+        
+        # Activate the virtual environment
+        if sys.platform == "win32":
+            activate_script = os.path.join(venv_path, "Scripts", "activate.bat")
+        else:
+            activate_script = os.path.join(venv_path, "bin", "activate")
+        
+        return venv_path, activate_script
+    except Exception as e:
+        logging.error(f"Error setting up virtual environment: {str(e)}")
+        raise
 
 CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 MAX_CONTINUATION_ITERATIONS = 25
@@ -337,11 +364,11 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
         #     tool_choice={"type": "auto"}
         # )
         response = client.chat.completions.create(
-        model="lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
-        messages=messages,
-        temperature=0.7,
-        tools=tools,
-        tool_choice={"type": "auto"}
+            model="lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+            messages=messages,
+            temperature=0.7,
+            tools=tools,
+            tool_choice={"type": "auto"}
         )
         # Update token usage for MAINMODEL
         main_model_tokens['input'] += response.usage.prompt_tokens
@@ -361,7 +388,7 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
     assistant_response = ""
     exit_continuation = False
     tool_uses = []
-
+# response.choices[0].message['content']
     for content_block in response.content:
         if content_block.type == "text":
             assistant_response += content_block.text
@@ -431,18 +458,26 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
         messages = filtered_conversation_history + current_conversation
 
         try:
-            tool_response = client.messages.create(
-                model=TOOLCHECKERMODEL,
-                max_tokens=8000,
-                system=update_system_prompt(current_iteration, max_iterations),
-                extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-                messages=messages,
-                tools=tools,
-                tool_choice={"type": "auto"}
-            )
+            # tool_response = client.messages.create(
+            #     model=TOOLCHECKERMODEL,
+            #     max_tokens=8000,
+            #     system=update_system_prompt(current_iteration, max_iterations),
+            #     extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+            #     messages=messages,
+            #     tools=tools,
+            #     tool_choice={"type": "auto"}
+            # )
+
+            tool_response = client.chat.completions.create(
+            model="lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+            messages=messages,
+            temperature=0.7,
+            tools=tools,
+            tool_choice={"type": "auto"}
+        )
             # Update token usage for tool checker
-            tool_checker_tokens['input'] += tool_response.usage.input_tokens
-            tool_checker_tokens['output'] += tool_response.usage.output_tokens
+            tool_checker_tokens['input'] += tool_response.usage.prompt_tokens
+            tool_checker_tokens['output'] += tool_response.usage.total_tokens
 
             tool_checker_response = ""
             for tool_content_block in tool_response.content:
@@ -465,61 +500,238 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
 
     return assistant_response, exit_continuation
 
-# from typing import Dict, Any
+from typing import Dict, Any
 
-# async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
-#     try:
-#         result = None
-#         is_error = False
 
-#         if tool_name == "create_folder":
-#             result = create_folder(tool_input["path"])
-#         elif tool_name == "create_file":
-#             result = create_file(tool_input["path"], tool_input.get("content", ""))
-#         elif tool_name == "edit_and_apply":
-#             result = await edit_and_apply(
-#                 tool_input["path"],
-#                 tool_input["instructions"],
-#                 tool_input["project_context"],
-#                 is_automode=automode
-#             )
-#         elif tool_name == "read_file":
-#             result = read_file(tool_input["path"])
-#         elif tool_name == "read_multiple_files":
-#             result = read_multiple_files(tool_input["paths"])
-#         elif tool_name == "list_files":
-#             result = list_files(tool_input.get("path", "."))
-#         elif tool_name == "tavily_search":
-#             result = tavily_search(tool_input["query"])
-#         elif tool_name == "stop_process":
-#             result = stop_process(tool_input["process_id"])
-#         elif tool_name == "execute_code":
-#             process_id, execution_result = await execute_code(tool_input["code"])
-#             analysis_task = asyncio.create_task(send_to_ai_for_executing(tool_input["code"], execution_result))
-#             analysis = await analysis_task
-#             result = f"{execution_result}\n\nAnalysis:\n{analysis}"
-#             if process_id in running_processes:
-#                 result += "\n\nNote: The process is still running in the background."
-#         else:
-#             is_error = True
-#             result = f"Unknown tool: {tool_name}"
+def create_folder(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        return f"Folder created: {path}"
+    except Exception as e:
+        return f"Error creating folder: {str(e)}"
+    
 
-#         return {
-#             "content": result,
-#             "is_error": is_error
-#         }
-#     except KeyError as e:
-#         logging.error(f"Missing required parameter {str(e)} for tool {tool_name}")
-#         return {
-#             "content": f"Error: Missing required parameter {str(e)} for tool {tool_name}",
-#             "is_error": True
-#         }
-#     except Exception as e:
-#         logging.error(f"Error executing tool {tool_name}: {str(e)}")
-#         return {
-#             "content": f"Error executing tool {tool_name}: {str(e)}",
-#             "is_error": True
-#         }
+def create_file(path, content=""):
+    global file_contents
+    try:
+        with open(path, 'w') as f:
+            f.write(content)
+        file_contents[path] = content
+        return f"File created and added to system prompt: {path}"
+    except Exception as e:
+        return f"Error creating file: {str(e)}"
+    
+def read_file(path):
+    global file_contents
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+        file_contents[path] = content
+        return f"File '{path}' has been read and stored in the system prompt."
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
+    
+
+def read_multiple_files(paths):
+    global file_contents
+    results = []
+    for path in paths:
+        try:
+            with open(path, 'r') as f:
+                content = f.read()
+            file_contents[path] = content
+            results.append(f"File '{path}' has been read and stored in the system prompt.")
+        except Exception as e:
+            results.append(f"Error reading file '{path}': {str(e)}")
+    return "\n".join(results)
+
+def list_files(path="."):
+    try:
+        files = os.listdir(path)
+        return "\n".join(files)
+    except Exception as e:
+        return f"Error listing files: {str(e)}"
+
+def tavily_search(query):
+    try:
+        response = tavily.qna_search(query=query, search_depth="advanced")
+        return response
+    except Exception as e:
+        return f"Error performing search: {str(e)}"
+
+def stop_process(process_id):
+    global running_processes
+    if process_id in running_processes:
+        process = running_processes[process_id]
+        if sys.platform == "win32":
+            process.terminate()
+        else:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        del running_processes[process_id]
+        return f"Process {process_id} has been stopped."
+    else:
+        return f"No running process found with ID {process_id}."
+    
+
+async def execute_code(code, timeout=10):
+    global running_processes
+    venv_path, activate_script = setup_virtual_environment()
+    
+    # Generate a unique identifier for this process
+    process_id = f"process_{len(running_processes)}"
+    
+    # Write the code to a temporary file
+    with open(f"{process_id}.py", "w") as f:
+        f.write(code)
+    
+    # Prepare the command to run the code
+    if sys.platform == "win32":
+        command = f'"{activate_script}" && python3 {process_id}.py'
+    else:
+        command = f'source "{activate_script}" && python3 {process_id}.py'
+    
+    # Create a process to run the command
+    process = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        shell=True,
+        preexec_fn=None if sys.platform == "win32" else os.setsid
+    )
+    
+    # Store the process in our global dictionary
+    running_processes[process_id] = process
+    
+    try:
+        # Wait for initial output or timeout
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        stdout = stdout.decode()
+        stderr = stderr.decode()
+        return_code = process.returncode
+    except asyncio.TimeoutError:
+        # If we timeout, it means the process is still running
+        stdout = "Process started and running in the background."
+        stderr = ""
+        return_code = "Running"
+    
+    execution_result = f"Process ID: {process_id}\n\nStdout:\n{stdout}\n\nStderr:\n{stderr}\n\nReturn Code: {return_code}"
+    return process_id, execution_result
+
+
+
+async def send_to_ai_for_executing(code, execution_result):
+    global code_execution_tokens
+
+    try:
+        system_prompt = f"""
+        You are an AI code execution agent. Your task is to analyze the provided code and its execution result from the 'code_execution_env' virtual environment, then provide a concise summary of what worked, what didn't work, and any important observations. Follow these steps:
+
+        1. Review the code that was executed in the 'code_execution_env' virtual environment:
+        {code}
+
+        2. Analyze the execution result from the 'code_execution_env' virtual environment:
+        {execution_result}
+
+        3. Provide a brief summary of:
+           - What parts of the code executed successfully in the virtual environment
+           - Any errors or unexpected behavior encountered in the virtual environment
+           - Potential improvements or fixes for issues, considering the isolated nature of the environment
+           - Any important observations about the code's performance or output within the virtual environment
+           - If the execution timed out, explain what this might mean (e.g., long-running process, infinite loop)
+
+        Be concise and focus on the most important aspects of the code execution within the 'code_execution_env' virtual environment.
+
+        IMPORTANT: PROVIDE ONLY YOUR ANALYSIS AND OBSERVATIONS. DO NOT INCLUDE ANY PREFACING STATEMENTS OR EXPLANATIONS OF YOUR ROLE.
+        """
+
+        # response = client.messages.create(
+        #     model=CODEEXECUTIONMODEL,
+        #     max_tokens=2000,
+        #     system=system_prompt,
+        #     messages=[
+        #         {"role": "user", "content": f"Analyze this code execution from the 'code_execution_env' virtual environment:\n\nCode:\n{code}\n\nExecution Result:\n{execution_result}"}
+        #     ]
+        # )
+        response = client.chat.completions.create(
+            model="lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+            messages=[
+                {"role": "user", "content": f"Analyze this code execution from the 'code_execution_env' virtual environment:\n\nCode:\n{code}\n\nExecution Result:\n{execution_result}"},
+                {"role": "system", "content": system_prompt},]
+
+        )
+                
+            # ],
+            # temperature=0.7,
+            # tools=tools,
+            # tool_choice={"type": "auto"}
+
+        # Update token usage for code execution
+        code_execution_tokens['input'] += response.usage.prompt_tokens
+        code_execution_tokens['output'] += response.usage.total_tokens
+
+        # analysis = response.content[0].text
+        analysis = response.choices[0].message['content']
+
+        return analysis
+
+    except Exception as e:
+        console.print(f"Error in AI code execution analysis: {str(e)}", style="bold red")
+        return f"Error analyzing code execution from 'code_execution_env': {str(e)}"
+
+    
+async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        result = None
+        is_error = False
+
+        if tool_name == "create_folder":
+            result = create_folder(tool_input["path"])
+        elif tool_name == "create_file":
+            result = create_file(tool_input["path"], tool_input.get("content", ""))
+        # elif tool_name == "edit_and_apply":
+        #     result = await edit_and_apply(
+        #         tool_input["path"],
+        #         tool_input["instructions"],
+        #         tool_input["project_context"],
+        #         is_automode=automode
+        #     )
+        elif tool_name == "read_file":
+            result = read_file(tool_input["path"])
+        elif tool_name == "read_multiple_files":
+            result = read_multiple_files(tool_input["paths"])
+        elif tool_name == "list_files":
+            result = list_files(tool_input.get("path", "."))
+        elif tool_name == "tavily_search":
+            result = tavily_search(tool_input["query"])
+        elif tool_name == "stop_process":
+            result = stop_process(tool_input["process_id"])
+        elif tool_name == "execute_code":
+            process_id, execution_result = await execute_code(tool_input["code"])
+            analysis_task = asyncio.create_task(send_to_ai_for_executing(tool_input["code"], execution_result))
+            analysis = await analysis_task
+            result = f"{execution_result}\n\nAnalysis:\n{analysis}"
+            if process_id in running_processes:
+                result += "\n\nNote: The process is still running in the background."
+        else:
+            is_error = True
+            result = f"Unknown tool: {tool_name}"
+
+        return {
+            "content": result,
+            "is_error": is_error
+        }
+    except KeyError as e:
+        logging.error(f"Missing required parameter {str(e)} for tool {tool_name}")
+        return {
+            "content": f"Error: Missing required parameter {str(e)} for tool {tool_name}",
+            "is_error": True
+        }
+    except Exception as e:
+        logging.error(f"Error executing tool {tool_name}: {str(e)}")
+        return {
+            "content": f"Error executing tool {tool_name}: {str(e)}",
+            "is_error": True
+        }
 
 
 
