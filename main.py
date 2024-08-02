@@ -55,7 +55,7 @@ def setup_virtual_environment() -> Tuple[str, str]:
 
 # Load environment variables from .env file
 load_dotenv()
-
+tool_checker_tokens
 # Initialize the Anthropic client
 # anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 # if not anthropic_api_key:
@@ -71,6 +71,8 @@ if not tavily_api_key:
 tavily = TavilyClient(api_key=tavily_api_key)
 
 console = Console()
+
+execute_tool
 
 
 # Token tracking variables
@@ -104,6 +106,8 @@ running_processes = {}
 CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 MAX_CONTINUATION_ITERATIONS = 25
 MAX_CONTEXT_TOKENS = 200000  # Reduced to 200k tokens for context window
+
+# update_system_prompt
 
 # Models
 # Models that maintain context memory across interactions

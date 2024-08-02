@@ -1,3 +1,269 @@
+from openai import OpenAI, OpenAIError, APIStatusError, APIError
+import difflib
+import time
+from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.markdown import Markdown
+import asyncio
+import aiohttp
+from prompt_toolkit import PromptSession
+from prompt_toolkit.styles import Style
+from typing import Tuple, Optional
+from rich.console import Console
+import json
+console = Console()
+
+client = OpenAI(base_url="http://10.2.125.37:1234/v1", api_key="lm-studio")
+
+CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
+MAX_CONTINUATION_ITERATIONS = 25
+MAX_CONTEXT_TOKENS = 200000
+main_model_tokens = {'input': 0, 'output': 0}
+tool_checker_tokens = {'input': 0, 'output': 0}
+code_editor_tokens = {'input': 0, 'output': 0}
+code_execution_tokens = {'input': 0, 'output': 0}
+tools = [
+    {
+        "name": "create_folder",
+        "description": "Create a new folder at the specified path. This tool should be used when you need to create a new directory in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the folder is created or already exists, and an error message if there's a problem creating the folder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute or relative path where the folder should be created. Use forward slashes (/) for path separation, even on Windows systems."
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "create_file",
+        "description": "Create a new file at the specified path with the given content. This tool should be used when you need to create a new file in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the file is created, and an error message if there's a problem creating the file or if the file already exists. The content should be as complete and useful as possible, including necessary imports, function definitions, and comments.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute or relative path where the file should be created. Use forward slashes (/) for path separation, even on Windows systems."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The content of the file. This should include all necessary code, comments, and formatting."
+                }
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
+        "name": "edit_and_apply",
+        "description": "Apply AI-powered improvements to a file based on specific instructions and detailed project context. This function reads the file, processes it in batches using AI with conversation history and comprehensive code-related project context. It generates a diff and allows the user to confirm changes before applying them. The goal is to maintain consistency and prevent breaking connections between files. This tool should be used for complex code modifications that require understanding of the broader project context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute or relative path of the file to edit. Use forward slashes (/) for path separation, even on Windows systems."
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": "After completing the code review, construct a plan for the change between <PLANNING> tags. Ask for additional source files or documentation that may be relevant. The plan should avoid duplication (DRY principle), and balance maintenance and flexibility. Present trade-offs and implementation choices at this step. Consider available Frameworks and Libraries and suggest their use when relevant. STOP at this step if we have not agreed a plan.\n\nOnce agreed, produce code between <OUTPUT> tags. Pay attention to Variable Names, Identifiers and String Literals, and check that they are reproduced accurately from the original source files unless otherwise directed. When naming by convention surround in double colons and in ::UPPERCASE::. Maintain existing code style, use language appropriate idioms. Produce Code Blocks with the language specified after the first backticks"
+                },
+                "project_context": {
+                    "type": "string",
+                    "description": "Comprehensive context about the project, including recent changes, new variables or functions, interconnections between files, coding standards, and any other relevant information that might affect the edit."
+                }
+            },
+            "required": ["path", "instructions", "project_context"]
+        }
+    },
+    {
+        "name": "execute_code",
+        "description": "Execute Python code in the 'code_execution_env' virtual environment and return the output. This tool should be used when you need to run code and see its output or check for errors. All code execution happens exclusively in this isolated environment. The tool will return the standard output, standard error, and return code of the executed code. Long-running processes will return a process ID for later management.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The Python code to execute in the 'code_execution_env' virtual environment. Include all necessary imports and ensure the code is complete and self-contained."
+                }
+            },
+            "required": ["code"]
+        }
+    },
+    {
+        "name": "stop_process",
+        "description": "Stop a running process by its ID. This tool should be used to terminate long-running processes that were started by the execute_code tool. It will attempt to stop the process gracefully, but may force termination if necessary. The tool will return a success message if the process is stopped, and an error message if the process doesn't exist or can't be stopped.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "process_id": {
+                    "type": "string",
+                    "description": "The ID of the process to stop, as returned by the execute_code tool for long-running processes."
+                }
+            },
+            "required": ["process_id"]
+        }
+    },
+    {
+        "name": "read_file",
+        "description": "Read the contents of a file at the specified path. This tool should be used when you need to examine the contents of an existing file. It will return the entire contents of the file as a string. If the file doesn't exist or can't be read, an appropriate error message will be returned.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute or relative path of the file to read. Use forward slashes (/) for path separation, even on Windows systems."
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "read_multiple_files",
+        "description": "Read the contents of multiple files at the specified paths. This tool should be used when you need to examine the contents of multiple existing files at once. It will return the status of reading each file, and store the contents of successfully read files in the system prompt. If a file doesn't exist or can't be read, an appropriate error message will be returned for that file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "An array of absolute or relative paths of the files to read. Use forward slashes (/) for path separation, even on Windows systems."
+                }
+            },
+            "required": ["paths"]
+        }
+    },
+    {
+        "name": "list_files",
+        "description": "List all files and directories in the specified folder. This tool should be used when you need to see the contents of a directory. It will return a list of all files and subdirectories in the specified path. If the directory doesn't exist or can't be read, an appropriate error message will be returned.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute or relative path of the folder to list. Use forward slashes (/) for path separation, even on Windows systems. If not provided, the current working directory will be used."
+                }
+            }
+        }
+    },
+    {
+        "name": "tavily_search",
+        "description": "Perform a web search using the Tavily API to get up-to-date information or additional context. This tool should be used when you need current information or feel a search could provide a better answer to the user's query. It will return a summary of the search results, including relevant snippets and source URLs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query. Be as specific and detailed as possible to get the most relevant results."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+]
+
+# System prompts
+BASE_SYSTEM_PROMPT = """
+You are Assistant-Engineer, an AI assistant powered by Anthropic's Llama 3.1 model, specialized in software development with access to a variety of tools and the ability to instruct and direct a coding agent and a code execution one. Your capabilities include:
+
+1. Creating and managing project structures
+2. Writing, debugging, and improving code across multiple languages
+3. Providing architectural insights and applying design patterns
+4. Staying current with the latest technologies and best practices
+5. Analyzing and manipulating files within the project directory
+6. Performing web searches for up-to-date information
+7. Executing code and analyzing its output within an isolated 'code_execution_env' virtual environment
+8. Managing and stopping running processes started within the 'code_execution_env'
+
+Available tools and their optimal use cases:
+
+1. create_folder: Create new directories in the project structure.
+2. create_file: Generate new files with specified content. Strive to make the file as complete and useful as possible.
+3. edit_and_apply: Examine and modify existing files by instructing a separate AI coding agent. You are responsible for providing clear, detailed instructions to this agent. When using this tool:
+   - Provide comprehensive context about the project, including recent changes, new variables or functions, and how files are interconnected.
+   - Clearly state the specific changes or improvements needed, explaining the reasoning behind each modification.
+   - Include ALL the snippets of code to change, along with the desired modifications.
+   - Specify coding standards, naming conventions, or architectural patterns to be followed.
+   - Anticipate potential issues or conflicts that might arise from the changes and provide guidance on how to handle them.
+4. execute_code: Run Python code exclusively in the 'code_execution_env' virtual environment and analyze its output. Use this when you need to test code functionality or diagnose issues. Remember that all code execution happens in this isolated environment. This tool now returns a process ID for long-running processes.
+5. stop_process: Stop a running process by its ID. Use this when you need to terminate a long-running process started by the execute_code tool.
+6. read_file: Read the contents of an existing file.
+7. read_multiple_files: Read the contents of multiple existing files at once. Use this when you need to examine or work with multiple files simultaneously.
+8. list_files: List all files and directories in a specified folder.
+9. tavily_search: Perform a web search using the Tavily API for up-to-date information.
+
+Tool Usage Guidelines:
+- Always use the most appropriate tool for the task at hand.
+- Provide detailed and clear instructions when using tools, especially for edit_and_apply.
+- After making changes, always review the output to ensure accuracy and alignment with intentions.
+- Use execute_code to run and test code within the 'code_execution_env' virtual environment, then analyze the results.
+- For long-running processes, use the process ID returned by execute_code to stop them later if needed.
+- Proactively use tavily_search when you need up-to-date information or additional context.
+- When working with multiple files, consider using read_multiple_files for efficiency.
+
+Error Handling and Recovery:
+- If a tool operation fails, carefully analyze the error message and attempt to resolve the issue.
+- For file-related errors, double-check file paths and permissions before retrying.
+- If a search fails, try rephrasing the query or breaking it into smaller, more specific searches.
+- If code execution fails, analyze the error output and suggest potential fixes, considering the isolated nature of the environment.
+- If a process fails to stop, consider potential reasons and suggest alternative approaches.
+
+Project Creation and Management:
+1. Start by creating a root folder for new projects.
+2. Create necessary subdirectories and files within the root folder.
+3. Organize the project structure logically, following best practices for the specific project type.
+
+Always strive for accuracy, clarity, and efficiency in your responses and actions. Your instructions must be precise and comprehensive. If uncertain, use the tavily_search tool or admit your limitations. When executing code, always remember that it runs in the isolated 'code_execution_env' virtual environment. Be aware of any long-running processes you start and manage them appropriately, including stopping them when they are no longer needed.
+
+When using tools:
+1. Carefully consider if a tool is necessary before using it.
+2. Ensure all required parameters are provided and valid.
+3. Handle both successful results and errors gracefully.
+4. Provide clear explanations of tool usage and results to the user.
+
+Remember, you are an AI assistant, and your primary goal is to help the user accomplish their tasks effectively and efficiently while maintaining the integrity and security of their development environment.
+"""
+
+
+AUTOMODE_SYSTEM_PROMPT = """
+You are currently in automode. Follow these guidelines:
+
+1. Goal Setting:
+   - Set clear, achievable goals based on the user's request.
+   - Break down complex tasks into smaller, manageable goals.
+
+2. Goal Execution:
+   - Work through goals systematically, using appropriate tools for each task.
+   - Utilize file operations, code writing, and web searches as needed.
+   - Always read a file before editing and review changes after editing.
+
+3. Progress Tracking:
+   - Provide regular updates on goal completion and overall progress.
+   - Use the iteration information to pace your work effectively.
+
+4. Tool Usage:
+   - Leverage all available tools to accomplish your goals efficiently.
+   - Prefer edit_and_apply for file modifications, applying changes in chunks for large edits.
+   - Use tavily_search proactively for up-to-date information.
+
+5. Error Handling:
+   - If a tool operation fails, analyze the error and attempt to resolve the issue.
+   - For persistent errors, consider alternative approaches to achieve the goal.
+
+6. Automode Completion:
+   - When all goals are completed, respond with "AUTOMODE_COMPLETE" to exit automode.
+   - Do not ask for additional tasks or modifications once goals are achieved.
+
+7. Iteration Awareness:
+   - You have access to this {iteration_info}.
+   - Use this information to prioritize tasks and manage time effectively.
+
+Remember: Focus on completing the established goals efficiently and effectively. Avoid unnecessary conversations or requests for additional tasks.
+"""
 
 async def chat_with_claude(user_input, image_path=None, current_iteration=None, max_iterations=None):
     global conversation_history, automode, main_model_tokens
@@ -34,6 +300,7 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
     #     console.print(Panel("Image message added to conversation history", title_align="left", title="Image Added", style="green"))
     # else:
     current_conversation.append({"role": "user", "content": user_input})
+    current_conversation.append({"role": "system", "content": update_system_prompt(current_iteration, max_iterations)})
 
     # Filter conversation history to maintain context
     filtered_conversation_history = []
@@ -60,18 +327,25 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
 
     try:
         # MAINMODEL call, which maintains context
-        response = client.messages.create(
-            model=MAINMODEL,
-            max_tokens=8000,
-            system=update_system_prompt(current_iteration, max_iterations),
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
-            messages=messages,
-            tools=tools,
-            tool_choice={"type": "auto"}
+        # response = client.messages.create(
+        #     model=MAINMODEL,
+        #     max_tokens=8000,
+        #     system=update_system_prompt(current_iteration, max_iterations),
+        #     extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+        #     messages=messages,
+        #     tools=tools,
+        #     tool_choice={"type": "auto"}
+        # )
+        response = client.chat.completions.create(
+        model="lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+        messages=messages,
+        temperature=0.7,
+        tools=tools,
+        tool_choice={"type": "auto"}
         )
         # Update token usage for MAINMODEL
-        main_model_tokens['input'] += response.usage.input_tokens
-        main_model_tokens['output'] += response.usage.output_tokens
+        main_model_tokens['input'] += response.usage.prompt_tokens
+        main_model_tokens['output'] += response.usage.total_tokens
     except APIStatusError as e:
         if e.status_code == 429:
             console.print(Panel("Rate limit exceeded. Retrying after a short delay...", title="API Error", style="bold yellow"))
@@ -190,3 +464,81 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
     display_token_usage()
 
     return assistant_response, exit_continuation
+
+# from typing import Dict, Any
+
+# async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+#     try:
+#         result = None
+#         is_error = False
+
+#         if tool_name == "create_folder":
+#             result = create_folder(tool_input["path"])
+#         elif tool_name == "create_file":
+#             result = create_file(tool_input["path"], tool_input.get("content", ""))
+#         elif tool_name == "edit_and_apply":
+#             result = await edit_and_apply(
+#                 tool_input["path"],
+#                 tool_input["instructions"],
+#                 tool_input["project_context"],
+#                 is_automode=automode
+#             )
+#         elif tool_name == "read_file":
+#             result = read_file(tool_input["path"])
+#         elif tool_name == "read_multiple_files":
+#             result = read_multiple_files(tool_input["paths"])
+#         elif tool_name == "list_files":
+#             result = list_files(tool_input.get("path", "."))
+#         elif tool_name == "tavily_search":
+#             result = tavily_search(tool_input["query"])
+#         elif tool_name == "stop_process":
+#             result = stop_process(tool_input["process_id"])
+#         elif tool_name == "execute_code":
+#             process_id, execution_result = await execute_code(tool_input["code"])
+#             analysis_task = asyncio.create_task(send_to_ai_for_executing(tool_input["code"], execution_result))
+#             analysis = await analysis_task
+#             result = f"{execution_result}\n\nAnalysis:\n{analysis}"
+#             if process_id in running_processes:
+#                 result += "\n\nNote: The process is still running in the background."
+#         else:
+#             is_error = True
+#             result = f"Unknown tool: {tool_name}"
+
+#         return {
+#             "content": result,
+#             "is_error": is_error
+#         }
+#     except KeyError as e:
+#         logging.error(f"Missing required parameter {str(e)} for tool {tool_name}")
+#         return {
+#             "content": f"Error: Missing required parameter {str(e)} for tool {tool_name}",
+#             "is_error": True
+#         }
+#     except Exception as e:
+#         logging.error(f"Error executing tool {tool_name}: {str(e)}")
+#         return {
+#             "content": f"Error executing tool {tool_name}: {str(e)}",
+#             "is_error": True
+#         }
+
+
+
+def update_system_prompt(current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> str:
+    global file_contents
+    chain_of_thought_prompt = """
+    Answer the user's request using relevant tools (if they are available). Before calling a tool, do some analysis within <thinking></thinking> tags. First, think about which of the provided tools is the relevant tool to answer the user's request. Second, go through each of the required parameters of the relevant tool and determine if the user has directly provided or given enough information to infer a value. When deciding if the parameter can be inferred, carefully consider all the context to see if it supports a specific value. If all of the required parameters are present or can be reasonably inferred, close the thinking tag and proceed with the tool call. BUT, if one of the values for a required parameter is missing, DO NOT invoke the function (not even with fillers for the missing params) and instead, ask the user to provide the missing parameters. DO NOT ask for more information on optional parameters if it is not provided.
+
+    Do not reflect on the quality of the returned search results in your response.
+    """
+    
+    file_contents_prompt = "\n\nFile Contents:\n"
+    for path, content in file_contents.items():
+        file_contents_prompt += f"\n--- {path} ---\n{content}\n"
+    
+    if automode:
+        iteration_info = ""
+        if current_iteration is not None and max_iterations is not None:
+            iteration_info = f"You are currently on iteration {current_iteration} out of {max_iterations} in automode."
+        return BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + AUTOMODE_SYSTEM_PROMPT.format(iteration_info=iteration_info) + "\n\n" + chain_of_thought_prompt
+    else:
+        return BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + chain_of_thought_prompt
