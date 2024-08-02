@@ -5,35 +5,35 @@ async def chat_with_claude(user_input, image_path=None, current_iteration=None, 
     # This function uses MAINMODEL, which maintains context across calls
     current_conversation = []
 
-    if image_path:
-        console.print(Panel(f"Processing image at path: {image_path}", title_align="left", title="Image Processing", expand=False, style="yellow"))
-        image_base64 = encode_image_to_base64(image_path)
+    # if image_path:
+    #     console.print(Panel(f"Processing image at path: {image_path}", title_align="left", title="Image Processing", expand=False, style="yellow"))
+    #     image_base64 = encode_image_to_base64(image_path)
 
-        if image_base64.startswith("Error"):
-            console.print(Panel(f"Error encoding image: {image_base64}", title="Error", style="bold red"))
-            return "I'm sorry, there was an error processing the image. Please try again.", False
+    #     if image_base64.startswith("Error"):
+    #         console.print(Panel(f"Error encoding image: {image_base64}", title="Error", style="bold red"))
+    #         return "I'm sorry, there was an error processing the image. Please try again.", False
 
-        image_message = {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                },
-                {
-                    "type": "text",
-                    "text": f"User input for image: {user_input}"
-                }
-            ]
-        }
-        current_conversation.append(image_message)
-        console.print(Panel("Image message added to conversation history", title_align="left", title="Image Added", style="green"))
-    else:
-        current_conversation.append({"role": "user", "content": user_input})
+    #     image_message = {
+    #         "role": "user",
+    #         "content": [
+    #             {
+    #                 "type": "image",
+    #                 "source": {
+    #                     "type": "base64",
+    #                     "media_type": "image/jpeg",
+    #                     "data": image_base64
+    #                 }
+    #             },
+    #             {
+    #                 "type": "text",
+    #                 "text": f"User input for image: {user_input}"
+    #             }
+    #         ]
+    #     }
+    #     current_conversation.append(image_message)
+    #     console.print(Panel("Image message added to conversation history", title_align="left", title="Image Added", style="green"))
+    # else:
+    current_conversation.append({"role": "user", "content": user_input})
 
     # Filter conversation history to maintain context
     filtered_conversation_history = []
