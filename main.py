@@ -72,7 +72,7 @@ tavily = TavilyClient(api_key=tavily_api_key)
 
 console = Console()
 
-execute_tool
+
 
 
 # Token tracking variables
